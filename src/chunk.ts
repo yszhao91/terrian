@@ -1,44 +1,53 @@
-import { BufferGeometry, Float32BufferAttribute, Mesh, MeshBasicMaterial, Uint32BufferAttribute, Vector3, Vector4 } from 'three';
+import { DoubleSide, Float32BufferAttribute, Mesh, MeshPhysicalMaterial, Uint32BufferAttribute, Vector3, Vector4 } from 'three';
 import { cornerIndexAFromEdge, cornerIndexBFromEdge, triangulation } from './mc';
 import { Perlin } from './perlin';
 
 const _v1 = new Vector3();
 const _v2 = new Vector3;
 
-const isoLevel = 0.5;
+const isoLevel = 0;
 
 export class Chunck extends Mesh {
-    center: Vector3 = new Vector3;
     spacing: number = 1;
-    boundsSize: number = 100;
+    unitSize: number;
+    boundsSize: number = 100; //一块chunk的高宽
     points: any = {};
     vertices: Array<any> = [];
-    size: number = 50;
-    constructor() {
+    segment: number = 32; //分段
+    origin: Vector3 = new Vector3;
+    constructor(origin: Vector3, chunkSize: number) {
         super();
+        this.origin.copy(origin);
+        this.boundsSize = chunkSize;
+        this.unitSize = this.boundsSize / this.segment;
 
-        this.material = new MeshBasicMaterial({ color: 0x007fff, wireframe: true });
+        this.material = new MeshPhysicalMaterial({ color: 0xaaaaaa, wireframe: true, side: DoubleSide });
         this.build();
     }
 
-    density(id: Vector3, noiseScale: number = 2.99, octaves = 6, persistence = 1,
+    density(vec: Vector3, noiseScale: number = 2.99, octaves = 6, persistence = 1,
         lacunarity = 1, floorOffset = 20.19, hardFloor = -2.84, hardFloorWeight = 3.05,
         noiseWeight = 6.09) {
-        const pos = this.center.clone().add(id/* _v1.copy(id).multiplyScalar(this.spacing).subScalar(this.boundsSize / 2) */);
+        // const pos = this.position.clone().add(id/* _v1.copy(id).multiplyScalar(this.spacing).subScalar(this.boundsSize / 2) */);
+
+        const origin = this.origin.clone();
+        _v1.copy(vec);
+        _v1.multiplyScalar(this.unitSize);
+        const curPos = origin.add(_v1);
 
         const offsetNoise = new Vector3;
         let noise = 0;
-        let frequency = noiseScale / 100;
+        let frequency = noiseScale / 140;
         let amplitude = 1;
         let weight = 1;
         const weightMultiplier = 1;
-        const params = { x: 1, y: 0 };
+        const params = { x: 1, y: 0.1 };
 
         for (let j = 0; j < octaves; j++) {
             // float n = snoise((pos+offsetNoise) * frequency + offsets[j] + offset);
 
-            _v2.copy(pos).add(offsetNoise).multiplyScalar(frequency) /* + offsets[j] + offset */
-            const n = Perlin.Noisev3(_v2)/10;
+            _v2.copy(curPos).add(offsetNoise).multiplyScalar(frequency) /* + offsets[j] + offset */
+            const n = Perlin.Noisev3(_v2) / 6.888;
             let v = 1 - Math.abs(n);
             v = v * v;
             v *= weight;
@@ -48,9 +57,9 @@ export class Chunck extends Mesh {
             frequency *= lacunarity;
         }
 
-        let finalVal = -(pos.y + floorOffset) + noise * noiseWeight + (pos.y % params.x) * params.y;
+        let finalVal = -(curPos.y * 0.8 + floorOffset) + noise * noiseWeight + (curPos.y % params.x) * params.y;
 
-        if (pos.y < hardFloor) {
+        if (curPos.y < hardFloor) {
             finalVal += hardFloorWeight;
         }
 
@@ -62,8 +71,8 @@ export class Chunck extends Mesh {
 
         }
 
-        var index = this.indexFromCoord(id.x, id.y, id.z);
-        this.points[index] = new Vector4(pos.x, pos.y, pos.z, finalVal);
+        var index = this.indexFromCoord(vec.x, vec.y, vec.z);
+        this.points[index] = new Vector4(curPos.x, curPos.y, curPos.z, finalVal);
     }
 
     interpolateVerts = (v1: Vector4, v2: Vector4) => {
@@ -76,22 +85,21 @@ export class Chunck extends Mesh {
     build() {
         this.vertices = []
         this.points = [];
-        for (let i = 0; i < this.size; i++) {
-            for (let j = 0; j < this.size; j++) {
-                for (let k = 0; k < this.size; k++) {
-                    this.density(_v1.set(i, j, k));
+        for (let i = 0; i <= this.segment; i++) {
+            for (let j = 0; j <= this.segment; j++) {
+                for (let k = 0; k <= this.segment; k++) {
+                    this.density(new Vector3(i, j, k));
                 }
             }
         }
 
-        for (let i = 0; i < this.size - 1; i++) {
-            for (let j = 0; j < this.size - 1; j++) {
-                for (let k = 0; k < this.size - 1; k++) {
-                    this.March(_v1.set(i, j, k));
+        for (let i = 0; i < this.segment; i++) {
+            for (let j = 0; j < this.segment; j++) {
+                for (let k = 0; k < this.segment; k++) {
+                    this.March(new Vector3(i, j, k));
                 }
             }
         }
-
 
         const vs = []
         const index = []
@@ -103,30 +111,29 @@ export class Chunck extends Mesh {
 
         const vf = new Float32BufferAttribute(vs, 3);
         this.geometry.setAttribute('position', vf);
-        this.geometry.setIndex(new Uint32BufferAttribute(index, 3)) 
-        // this.geometry.
+        this.geometry.setIndex(new Uint32BufferAttribute(index, 1))
+        this.geometry.computeVertexNormals();
     }
 
-    indexFromCoord = (x: number, y: number, z: number): number => {
-        return z * this.size * this.size + y * this.size + x;
+    indexFromCoord(x: number, y: number, z: number): number {
+        const seg = this.segment + 1;
+        return z * seg * seg + y * seg + x;
     }
 
-    March(id: Vector3) {
-        // Stop one point before the end because voxel includes neighbouring points
-        if (id.x >= this.size - 1 || id.y >= this.size - 1 || id.z >= this.size - 1) {
-            return;
-        }
+    March(vec: Vector3) {
+        if (vec.z === this.segment)
+            debugger
 
         // 8 corners of the current cube
         const cubeCorners = [
-            this.points[this.indexFromCoord(id.x, id.y, id.z)],
-            this.points[this.indexFromCoord(id.x + 1, id.y, id.z)],
-            this.points[this.indexFromCoord(id.x + 1, id.y, id.z + 1)],
-            this.points[this.indexFromCoord(id.x, id.y, id.z + 1)],
-            this.points[this.indexFromCoord(id.x, id.y + 1, id.z)],
-            this.points[this.indexFromCoord(id.x + 1, id.y + 1, id.z)],
-            this.points[this.indexFromCoord(id.x + 1, id.y + 1, id.z + 1)],
-            this.points[this.indexFromCoord(id.x, id.y + 1, id.z + 1)]
+            this.points[this.indexFromCoord(vec.x, vec.y, vec.z)],
+            this.points[this.indexFromCoord(vec.x + 1, vec.y, vec.z)],
+            this.points[this.indexFromCoord(vec.x + 1, vec.y, vec.z + 1)],
+            this.points[this.indexFromCoord(vec.x, vec.y, vec.z + 1)],
+            this.points[this.indexFromCoord(vec.x, vec.y + 1, vec.z)],
+            this.points[this.indexFromCoord(vec.x + 1, vec.y + 1, vec.z)],
+            this.points[this.indexFromCoord(vec.x + 1, vec.y + 1, vec.z + 1)],
+            this.points[this.indexFromCoord(vec.x, vec.y + 1, vec.z + 1)]
         ];
 
         // Calculate unique index for each cube configuration.
@@ -142,7 +149,7 @@ export class Chunck extends Mesh {
         if (cubeCorners[5].w < isoLevel) cubeIndex |= 32;
         if (cubeCorners[6].w < isoLevel) cubeIndex |= 64;
         if (cubeCorners[7].w < isoLevel) cubeIndex |= 128;
-        if (cubeIndex === 0 )
+        if (cubeIndex === 0)
             return;
 
         // Create triangles for current cube configuration
